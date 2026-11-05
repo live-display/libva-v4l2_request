@@ -98,6 +98,17 @@ static uint32_t capture_surface_id(struct v4l2r_context *ctx, uint32_t index)
 	return VA_INVALID_ID;
 }
 
+/* Planes of a multiplanar buffer: one for the bitstream, as many as the
+ * negotiated format for frames (e.g. 2 for the Raspberry Pi NV12MT_COL128). */
+static unsigned int buffer_planes(struct v4l2r_context *ctx,
+				  enum v4l2_buf_type type)
+{
+	if (V4L2_TYPE_IS_OUTPUT(type))
+		return 1;
+
+	return ctx->capture_format.fmt.pix_mp.num_planes;
+}
+
 static int queue_buffer(struct v4l2r_context *ctx, struct v4l2_buffer *buffer)
 {
 	struct v4l2_plane planes[VIDEO_MAX_PLANES] = {0};
@@ -105,7 +116,7 @@ static int queue_buffer(struct v4l2r_context *ctx, struct v4l2_buffer *buffer)
 	if (V4L2_TYPE_IS_MULTIPLANAR(buffer->type)) {
 		planes[0].bytesused = buffer->bytesused;
 		buffer->bytesused = 0;
-		buffer->length = 1;
+		buffer->length = buffer_planes(ctx, buffer->type);
 		buffer->m.planes = planes;
 	}
 
@@ -171,7 +182,7 @@ static int dequeue_buffer(struct v4l2r_context *ctx, enum v4l2_buf_type type)
 	};
 
 	if (V4L2_TYPE_IS_MULTIPLANAR(type)) {
-		buffer.length = 1;
+		buffer.length = buffer_planes(ctx, type);
 		buffer.m.planes = planes;
 	}
 
