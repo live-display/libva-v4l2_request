@@ -450,6 +450,7 @@ static VAStatus backing_alloc_default(struct v4l2r_driver *drv,
 				      struct v4l2r_surface *surface)
 {
 	uint32_t pixelformat = V4L2_PIX_FMT_NV12;
+	VAStatus status;
 
 	/* With a converter around, 10-bit configs hand out NV12 surfaces;
 	 * bare P010 only works on decoders that produce it natively. */
@@ -459,8 +460,21 @@ static VAStatus backing_alloc_default(struct v4l2r_driver *drv,
 	     !v4l2r_converter_available(drv)))
 		pixelformat = V4L2_PIX_FMT_P010;
 
-	return backing_alloc(drv, surface, surface->width, surface->height,
-			     pixelformat);
+	status = backing_alloc(drv, surface, surface->width, surface->height,
+			       pixelformat);
+
+#if defined(V4L2_PIX_FMT_NV12MT_COL128) && defined(V4L2_PIX_FMT_NV12MT_10_COL128)
+	/* The Raspberry Pi HEVC decoder only produces Broadcom SAND column
+	 * formats; clients such as Chromium export surfaces before decoding. */
+	if (status != VA_STATUS_SUCCESS)
+		status = backing_alloc(drv, surface, surface->width,
+				       surface->height,
+				       pixelformat == V4L2_PIX_FMT_P010 ?
+				       V4L2_PIX_FMT_NV12MT_10_COL128 :
+				       V4L2_PIX_FMT_NV12MT_COL128);
+#endif
+
+	return status;
 }
 
 /*
