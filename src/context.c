@@ -380,7 +380,8 @@ static int capture_buffer_new(struct v4l2r_context *ctx)
 {
 	struct v4l2_create_buffers buffers = {
 		.count = 1,
-		.memory = V4L2_MEMORY_MMAP,
+		.memory = ctx->capture_dmabuf ? V4L2_MEMORY_DMABUF :
+						V4L2_MEMORY_MMAP,
 		.format = ctx->capture_format,
 	};
 	struct v4l2_plane planes[VIDEO_MAX_PLANES] = {0};
@@ -464,19 +465,31 @@ static int capture_buffer_new(struct v4l2r_context *ctx)
  * read fence a GPU attaches while sampling it. Buffers that were never exported
  * carry fd == -1 and are skipped.
  */
-static void capture_wait_readers(struct v4l2r_capture_buffer *capture)
+static void dmabufs_wait_readers(const int *dmabuf_fd, unsigned int nb_planes)
 {
-	for (unsigned int i = 0; i < capture->nb_planes; i++) {
+	for (unsigned int i = 0; i < nb_planes; i++) {
 		struct pollfd pfd = {
-			.fd = capture->dmabuf_fd[i],
+			.fd = dmabuf_fd[i],
 			.events = POLLOUT,
 		};
 
-		if (capture->dmabuf_fd[i] < 0)
+		if (dmabuf_fd[i] < 0)
 			continue;
 
 		poll(&pfd, 1, V4L2R_POLL_TIMEOUT_MS);
 	}
+}
+
+static void capture_wait_readers(const struct v4l2r_context *ctx,
+				 struct v4l2r_capture_buffer *capture,
+				 const struct v4l2r_surface *surface)
+{
+	/* With imported CAPTURE buffers the exported memory is the backing. */
+	if (ctx->capture_dmabuf && surface->backing)
+		dmabufs_wait_readers(surface->backing->dmabuf_fd,
+				     surface->backing->nb_planes);
+	else
+		dmabufs_wait_readers(capture->dmabuf_fd, capture->nb_planes);
 }
 
 /*
@@ -542,7 +555,7 @@ static int capture_buffer_bind(struct v4l2r_context *ctx,
 	 * wait for readers to finish before handing the buffer back to decode.
 	 * No-op for a buffer never exported (fd < 0) or already idle.
 	 */
-	capture_wait_readers(&ctx->captures[index]);
+	capture_wait_readers(ctx, &ctx->captures[index], surface);
 	uint64_t t3 = v4l2r_now_ns();
 
 	v4l2r_trace("bind wait (surface 0x%08x buf #%d): sync %.2f refwait %.2f "
@@ -630,6 +643,9 @@ VAStatus v4l2r_context_bind_surface(struct v4l2r_context *ctx,
 			}
 		}
 
+		ctx->capture_dmabuf = !ctx->conv &&
+			(ctx->capture_capabilities & V4L2_BUF_CAP_SUPPORTS_DMABUF);
+
 		type = ctx->output_format.type;
 		if (ioctl(ctx->video_fd, VIDIOC_STREAMON, &type) < 0) {
 			v4l2r_log("failed to start OUTPUT streaming: %s\n",
@@ -637,6 +653,12 @@ VAStatus v4l2r_context_bind_surface(struct v4l2r_context *ctx,
 			return VA_STATUS_ERROR_OPERATION_FAILED;
 		}
 	}
+
+	/* Imported CAPTURE buffers: the backing, exported or not yet, is the
+	 * memory the decoder writes into. */
+	if (ctx->capture_dmabuf &&
+	    v4l2r_surface_decode_backing(ctx, surface) != VA_STATUS_SUCCESS)
+		return VA_STATUS_ERROR_ALLOCATION_FAILED;
 
 	/* Bind (and, if reused, drain the references of) the surface's CAPTURE
 	 * buffer for this frame's decode. */
@@ -648,7 +670,7 @@ VAStatus v4l2r_context_bind_surface(struct v4l2r_context *ctx,
 	 * standalone backing from pre-decode export probing. With a
 	 * conversion chain the backing IS the presented storage - keep it
 	 * (v4l2r_surface_convert_backing replaces a mismatched one). */
-	if (!ctx->conv)
+	if (!ctx->conv && !ctx->capture_dmabuf)
 		v4l2r_surface_free_backing(surface);
 
 	if (starting) {
@@ -661,10 +683,11 @@ VAStatus v4l2r_context_bind_surface(struct v4l2r_context *ctx,
 
 		ctx->streaming = true;
 
-		v4l2r_log("using CAPTURE format %.4s (%ux%u)\n",
+		v4l2r_log("using CAPTURE format %.4s (%ux%u), %s buffers\n",
 			  (const char *)&(uint32_t){v4l2r_format_pixelformat(&ctx->capture_format)},
 			  v4l2r_format_width(&ctx->capture_format),
-			  v4l2r_format_height(&ctx->capture_format));
+			  v4l2r_format_height(&ctx->capture_format),
+			  ctx->capture_dmabuf ? "imported" : "mmap");
 	}
 
 	return VA_STATUS_SUCCESS;

@@ -282,6 +282,10 @@ struct v4l2r_context {
 	uint32_t output_capabilities;
 	uint32_t capture_capabilities;
 	bool streaming;			/* CAPTURE side fully configured */
+	/* CAPTURE buffers are imported from the surfaces' backing (DMABUF) so
+	 * the decoder writes into the memory exported to clients, which may
+	 * export a surface once before its first decode (Chromium). */
+	bool capture_dmabuf;
 
 	struct v4l2r_output_buffer output[V4L2R_OUTPUT_BUFFERS];
 	uint8_t next_output;
@@ -649,6 +653,12 @@ int v4l2r_export_capture_dmabufs(struct v4l2r_context *ctx,
  * destination format (NV12 at the converter CAPTURE layout). */
 VAStatus v4l2r_surface_convert_backing(struct v4l2r_driver *drv,
 				       struct v4l2r_surface *surface);
+
+/* Ensure the surface has backing matching the decode CAPTURE layout, to be
+ * imported as its CAPTURE buffer (ctx->capture_dmabuf). An existing backing,
+ * possibly already exported, is kept whenever it fits. */
+VAStatus v4l2r_surface_decode_backing(struct v4l2r_context *ctx,
+				      struct v4l2r_surface *surface);
 
 /* --- codec table --- */
 

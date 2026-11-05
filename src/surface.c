@@ -524,6 +524,67 @@ VAStatus v4l2r_surface_convert_backing(struct v4l2r_driver *drv,
 	return VA_STATUS_SUCCESS;
 }
 
+static bool backing_fits_capture(const struct v4l2r_surface_backing *backing,
+				 const struct v4l2_format *format)
+{
+	if (backing->pixelformat != v4l2r_format_pixelformat(format) ||
+	    backing->pitch != v4l2r_format_bytesperline(format))
+		return false;
+
+	if (!V4L2_TYPE_IS_MULTIPLANAR(format->type))
+		return backing->nb_planes == 1 &&
+		       backing->plane_size[0] >= format->fmt.pix.sizeimage;
+
+	if (backing->nb_planes != format->fmt.pix_mp.num_planes)
+		return false;
+
+	for (unsigned int i = 0; i < backing->nb_planes; i++) {
+		if (backing->plane_size[i] <
+		    format->fmt.pix_mp.plane_fmt[i].sizeimage)
+			return false;
+	}
+
+	return true;
+}
+
+VAStatus v4l2r_surface_decode_backing(struct v4l2r_context *ctx,
+				      struct v4l2r_surface *surface)
+{
+	const struct v4l2_format *format = &ctx->capture_format;
+	VAStatus status;
+
+	if (surface->backing && backing_fits_capture(surface->backing, format))
+		return VA_STATUS_SUCCESS;
+
+	/* An exported backing replaced here leaves the client on stale
+	 * memory: the pre-decode allocation must match the CAPTURE layout. */
+	if (surface->backing) {
+		v4l2r_log("surface 0x%08x backing %.4s pitch %u does not fit "
+			  "CAPTURE %.4s pitch %u, reallocating\n", surface->id,
+			  (const char *)&surface->backing->pixelformat,
+			  surface->backing->pitch,
+			  (const char *)&(uint32_t){v4l2r_format_pixelformat(format)},
+			  v4l2r_format_bytesperline(format));
+		v4l2r_surface_free_backing(surface);
+	}
+
+	status = backing_alloc(ctx->drv, surface, v4l2r_format_width(format),
+			       v4l2r_format_height(format),
+			       v4l2r_format_pixelformat(format));
+	if (status != VA_STATUS_SUCCESS)
+		return status;
+
+	if (!backing_fits_capture(surface->backing, format)) {
+		v4l2r_log("decode backing layout mismatch (pitch %u vs %u)\n",
+			  surface->backing->pitch,
+			  v4l2r_format_bytesperline(format));
+		v4l2r_surface_free_backing(surface);
+		return VA_STATUS_ERROR_OPERATION_FAILED;
+	}
+
+	return VA_STATUS_SUCCESS;
+}
+
 /* --- unified surface memory view --- */
 
 int v4l2r_export_capture_dmabufs(struct v4l2r_context *ctx,
@@ -565,6 +626,10 @@ VAStatus v4l2r_surface_capture_view(struct v4l2r_surface *surface,
 
 	if (!ctx || surface->capture_index < 0)
 		return VA_STATUS_ERROR_INVALID_SURFACE;
+
+	/* Imported CAPTURE buffers have no memory of their own. */
+	if (ctx->capture_dmabuf)
+		return v4l2r_surface_view(ctx->drv, surface, need_maps, view);
 
 	capture = &ctx->captures[surface->capture_index];
 	format = &ctx->capture_format;
@@ -625,11 +690,13 @@ VAStatus v4l2r_surface_view(struct v4l2r_driver *drv,
 		    v4l2r_surface_convert_backing(drv, surface) !=
 		    VA_STATUS_SUCCESS)
 			return VA_STATUS_ERROR_OPERATION_FAILED;
-	} else if (surface->ctx && surface->capture_index >= 0) {
+	} else if (surface->ctx && surface->capture_index >= 0 &&
+		   !surface->ctx->capture_dmabuf) {
 		return v4l2r_surface_capture_view(surface, need_maps, view);
 	}
 
-	/* Unbound surface: use (or create) standalone backing. */
+	/* Unbound surface, or one decoded into its imported backing: use (or
+	 * create) the standalone backing. */
 	if (!surface->backing) {
 		VAStatus status = backing_alloc_default(drv, surface);
 		if (status != VA_STATUS_SUCCESS)
