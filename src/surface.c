@@ -737,11 +737,13 @@ static VAStatus fill_prime_descriptor(const struct v4l2r_frame_view *view,
 	}
 #endif
 
+	/* Chromium requests separate layers and reads one plane per layer,
+	 * so the Broadcom SAND layouts (one or two objects) need them too. */
 	if ((flags & VA_EXPORT_SURFACE_SEPARATE_LAYERS) && two_planes &&
-	    view->nb_planes == 1 &&
 	    (info->drm_format == DRM_FORMAT_NV12 ||
 	     info->drm_format == DRM_FORMAT_P010) &&
-	    modifier == DRM_FORMAT_MOD_LINEAR) {
+	    (modifier == DRM_FORMAT_MOD_LINEAR ||
+	     (modifier >> 56) == DRM_FORMAT_MOD_VENDOR_BROADCOM)) {
 		bool p010 = info->drm_format == DRM_FORMAT_P010;
 
 		desc->num_layers = 2;
@@ -752,8 +754,8 @@ static VAStatus fill_prime_descriptor(const struct v4l2r_frame_view *view,
 		desc->layers[0].pitch[0] = pitch;
 		desc->layers[1].drm_format = p010 ? DRM_FORMAT_GR1616 : DRM_FORMAT_GR88;
 		desc->layers[1].num_planes = 1;
-		desc->layers[1].object_index[0] = 0;
-		desc->layers[1].offset[0] = offset1;
+		desc->layers[1].object_index[0] = view->nb_planes > 1 ? 1 : 0;
+		desc->layers[1].offset[0] = view->nb_planes > 1 ? 0 : offset1;
 		desc->layers[1].pitch[0] = pitch1;
 
 		return VA_STATUS_SUCCESS;
