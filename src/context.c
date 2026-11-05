@@ -611,14 +611,15 @@ VAStatus v4l2r_context_bind_surface(struct v4l2r_context *ctx,
 		 * format converter behind it. Without a converter such a
 		 * stream cannot be presented at all: fail the decode so the
 		 * client falls back to software instead of getting frames
-		 * it cannot display.
+		 * it cannot display. Tiled formats (e.g. Broadcom SAND) need
+		 * no converter: they are exported with their DRM modifier.
 		 */
 		{
 			const struct v4l2r_format_info *info =
 				v4l2r_format_by_pixelformat(
 					v4l2r_format_pixelformat(&ctx->capture_format));
 
-			if (info && !info->va_fourcc) {
+			if (info && !info->va_fourcc && info->linear) {
 				v4l2r_convert_setup(ctx);
 				if (!ctx->conv) {
 					v4l2r_log("no usable format converter for %.4s, "
