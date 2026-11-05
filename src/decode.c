@@ -613,8 +613,19 @@ VAStatus v4l2r_decode(struct v4l2r_context *ctx,
 
 	/* Without HOLD_CAPTURE_BUF support every slice must be submitted as
 	 * a full frame. */
-	if (!(ctx->output_capabilities & V4L2_BUF_CAP_SUPPORTS_M2M_HOLD_CAPTURE_BUF))
-		return queue_decode(ctx, controls, count, true, true);
+	if (!(ctx->output_capabilities & V4L2_BUF_CAP_SUPPORTS_M2M_HOLD_CAPTURE_BUF)) {
+		first_slice = true;
+		last_slice = true;
+	}
 
-	return queue_decode(ctx, controls, count, first_slice, last_slice);
+	status = queue_decode(ctx, controls, count, first_slice, last_slice);
+	if (status != VA_STATUS_SUCCESS || !last_slice || !ctx->capture_dmabuf ||
+	    ctx->pic.ref_mask)
+		return status;
+
+	/* The CAPTURE dma-buf carries no fence and clients such as Chromium
+	 * sample it without vaSyncSurface(). A frame without references (start,
+	 * seek, loop) is shown right away: finish its decode or it tears. Other
+	 * frames are decoded ahead, keeping the decoder pipelined. */
+	return v4l2r_sync_capture(ctx, ctx->pic.target->capture_index);
 }
